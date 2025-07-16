@@ -119,6 +119,33 @@ def diarize_speakers(wav_path, segments):
 
     return segment_speakers
 
+def group_speaker_blocks(speaker_segments):
+    """
+    Kombiniert aufeinanderfolgende Sprechersegmente mit demselben Sprecher zu einem Block.
+    """
+    if not speaker_segments:
+        return []
+
+    grouped = []
+    current_speaker, current_text = speaker_segments[0]
+
+    for speaker, text in speaker_segments[1:]:
+        if speaker == current_speaker:
+            current_text += " " + text.strip()
+        else:
+            grouped.append((current_speaker, current_text.strip()))
+            current_speaker, current_text = speaker, text.strip()
+
+    # letzten Block anhängen
+    grouped.append((current_speaker, current_text.strip()))
+    return grouped
+
+def format_grouped_blocks(grouped):
+    formatted = []
+    for speaker, text in grouped:
+        formatted.append(f"[{speaker}]: {text}")
+    return "\n\n".join(formatted)
+
 # ---------------------- GUI CALLBACKS ----------------------
 def on_model_select(choice):
     global model
@@ -158,8 +185,9 @@ def transkribieren():
     speaker_segments = diarize_speakers(filepath, segments)
 
     # Formatieren für Ausgabe
-    formatted_lines = [f"[{speaker}]: {text}" for speaker, text in speaker_segments]
-    final_text = "\n\n".join(formatted_lines)
+    #formatted_lines = [f"[{speaker}]: {text}" for speaker, text in speaker_segments]
+    #final_text = "\n\n".join(formatted_lines)
+    final_text = format_grouped_blocks(group_speaker_blocks(speaker_segments))   
 
     # Anzeigen und Speichern
     text_box.delete("1.0", "end")
