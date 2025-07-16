@@ -6,11 +6,6 @@ from datetime import datetime
 import sys
 
 
-#Zu Git hinzufügen
-#Output ornder erstellen, falls nicht vorhanden
-#formattierung nochmal checken
-#tests mit interviews machen
-
 # Modell-Mapping: Anzeige-Name → Whisper-Modellname
 model_dict = {
     "Sehr schnell (niedrige Genauigkeit)": "tiny",
@@ -180,7 +175,7 @@ button_frame.grid_columnconfigure(1, weight=1)
 
 # Linker Button: Modell Dropdown
 model_dropdown = ctk.CTkOptionMenu(button_frame, values=list(model_dict.keys()), command=on_model_select)
-model_dropdown.set("Ausgewogen (gute Genauigkeit/völlig ausreichend)")
+model_dropdown.set("Ausgewogen (gute Genauigkeit/empfohlen)")
 model_dropdown.grid(row=0, column=0, sticky="w", padx=(20,0))  # links bündig mit Textbox
 
 # Rechter Button: Upload
