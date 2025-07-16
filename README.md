@@ -24,5 +24,5 @@
 ## 🚀 Installation
 
 Alle benötigten Bibliotheken sind in der requirements.txt zu finden.
-Diese müssen installiert sein, um die ANwendung starten zu können.
+Diese müssen installiert sein, um die Anwendung starten zu können.
 Exe-Release folgt

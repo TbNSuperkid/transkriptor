@@ -4,86 +4,64 @@ import whisper
 import os
 from datetime import datetime
 import sys
+import subprocess
+from resemblyzer import VoiceEncoder, preprocess_wav
+from resemblyzer import VoiceEncoder
+import numpy as np
+import scipy.io.wavfile as wav
 
 
-#Zu Git hinzufügen
-#Output ornder erstellen, falls nicht vorhanden
-#formattierung nochmal checken
-#tests mit interviews machen
+encoder = VoiceEncoder()
+sample_rate = 16000  # Standard Sample Rate für Whisper und Resemblyzer
 
-# Modell-Mapping: Anzeige-Name → Whisper-Modellname
+
+# ---------------------- MODEL SETUP ----------------------
 model_dict = {
     "Sehr schnell (niedrige Genauigkeit)": "tiny",
     "Schnell (mittlere Genauigkeit)": "base",
     "Ausgewogen (gute Genauigkeit/empfohlen)": "small",
-    "Langsam (hohe Genauigkeit/Starker PC benötigt)": "medium",
-    #"Sehr langsam (beste Genauigkeit/Kompletter Overkill)": "large"
+    "Langsam (hohe Genauigkeit/Starker PC benötigt)": "medium"
 }
-
-# Aktuelles Modell initial laden
 current_model_name = "base"
 model = whisper.load_model(current_model_name)
+encoder = VoiceEncoder()  # Resemblyzer Speaker Encoder laden
 
-
+# ---------------------- UTILITY FUNKTIONEN ----------------------
 def create_output_folder():
-    # Pfad zur aktuellen .exe oder .py Datei ermitteln
-    if getattr(sys, 'frozen', False):
-        # Läuft als .exe (kompiliert)
-        base_path = os.path.dirname(sys.executable)
-    else:
-        # Läuft als .py (Development)
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    
-    # Output-Ordner Pfad erstellen
+    base_path = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
     output_path = os.path.join(base_path, "output")
-    
-    # Ordner erstellen, falls er nicht existiert
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
-        print(f"Output-Ordner erstellt: {output_path}")
-    else:
-        print(f"Output-Ordner existiert bereits: {output_path}")
-    
+    os.makedirs(output_path, exist_ok=True)
     return output_path
-
 
 def maximize_window():
     app.state('zoomed')
-    
 
-# Dynamische Größe für Textbox berechnen
-def resize_textbox(event):
-    width = int(event.width * 0.7)
-    height = int(event.height * 0.6)
-    text_box.configure(width=width, height=height)
-
-#Output Ordner öffnen
-def open_output_folder():
-    output_path = create_output_folder()  # Erstellt den Ordner falls nötig
-    if os.path.exists(output_path):
-        os.startfile(output_path)
-    else:
-        status_label.configure(text="Ordner 'output' konnte nicht erstellt werden.")
-
-# Funktion zum Formatieren des Textes mit Zeilenumbrüchen, Kommas und Punkten
 def format_text_with_linebreaks_commas_points(text, target=200, radius=20):
     result = []
     start = 0
     length = len(text)
 
     while start < length:
-        end = min(start + target, length)
+        remaining = text[start:].strip()
 
+        # Wenn der Rest kürzer ist als target, einfach anhängen
+        if len(remaining) <= target:
+            result.append(remaining)
+            break
+
+        end = start + target
         search_start = max(start, end - radius)
         search_end = min(length, end + radius)
 
-        # Suche Komma oder Punkt nach 'end' zuerst
         split_pos = -1
+
+        # Suche Komma oder Punkt nach 'end' zuerst
         for i in range(end, search_end):
             if text[i] in {',', '.'}:
                 split_pos = i
                 break
-        # Falls nicht gefunden, suche Komma oder Punkt vor 'end'
+
+        # Wenn nichts nach 'end' gefunden, dann vor 'end'
         if split_pos == -1:
             for i in range(search_start, end):
                 if text[i] in {',', '.'}:
@@ -91,14 +69,11 @@ def format_text_with_linebreaks_commas_points(text, target=200, radius=20):
                     break
 
         if split_pos != -1:
-            line_end = split_pos + 1  # Komma oder Punkt mitnehmen
+            line_end = split_pos + 1
         else:
-            # Sonst am nächsten Leerzeichen nach 'end' umbrechen
+            # An nächstem Leerzeichen umbrechen
             space_pos = text.find(' ', end)
-            if space_pos == -1:
-                line_end = length
-            else:
-                line_end = space_pos + 1
+            line_end = length if space_pos == -1 else space_pos + 1
 
         line = text[start:line_end].strip()
         result.append(line)
@@ -107,100 +82,131 @@ def format_text_with_linebreaks_commas_points(text, target=200, radius=20):
     return '\n'.join(result)
 
 
-# Callback-Funktion für das Dropdown-Menü
+def convert_to_wav(filepath):
+    wav_path = os.path.splitext(filepath)[0] + ".converted.wav"
+    subprocess.run([
+        "ffmpeg", "-y", "-i", filepath, "-ar", str(sample_rate), wav_path
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return wav_path
+
+def diarize_speakers(wav_path, segments):
+    wav_preprocessed = preprocess_wav(wav_path)
+    _, cont_embeds, _ = encoder.embed_utterance(wav_preprocessed, return_partials=True)
+
+    speaker_ids = []
+    threshold = 0.75
+    known_speakers = []
+
+    for emb in cont_embeds:
+        assigned = False
+        for i, ref in enumerate(known_speakers):
+            similarity = np.inner(emb, ref)
+            if similarity > threshold:
+                speaker_ids.append(i)
+                known_speakers[i] = (ref + emb) / 2  # Update reference
+                assigned = True
+                break
+        if not assigned:
+            speaker_ids.append(len(known_speakers))
+            known_speakers.append(emb)
+
+    segment_speakers = []
+    ratio = len(cont_embeds) / len(segments)
+    for idx, seg in enumerate(segments):
+        speaker_idx = int(round(idx * ratio))
+        speaker = speaker_ids[speaker_idx] if speaker_idx < len(speaker_ids) else 0
+        segment_speakers.append((f"Sprecher {speaker + 1}", seg['text'].strip()))
+
+    return segment_speakers
+
+# ---------------------- GUI CALLBACKS ----------------------
 def on_model_select(choice):
-    status_label.configure(text="")
     global model
-    # Modellname aus dict holen
     whisper_model_name = model_dict[choice]
     text_box.delete("1.0", "end")
     text_box.insert("1.0", f"Lade Modell: {choice} ...")
-    #status_label.configure(text=f"Lade Modell: {choice} ...")
     app.update()
     model = whisper.load_model(whisper_model_name)
     text_box.delete("1.0", "end")
     text_box.insert("1.0", f"Modell gewechselt zu: {choice}\nWähle eine Audiodatei zum Transkribieren")
-    #status_label.configure(text=f"Modell gewechselt zu: {choice}")
 
-#Funktion zum Transkribieren der Audiodatei
+def open_output_folder():
+    os.startfile(create_output_folder())
+
 def transkribieren():
     filepath = filedialog.askopenfilename(filetypes=[("Audio Dateien", "*.mp3 *.wav *.m4a")])
     if not filepath:
         return
-    
-    original_name = os.path.splitext(os.path.basename(filepath))[0]
+
     text_box.delete("1.0", "end")
     text_box.insert("1.0", "Transkribiere... Bitte warten.")
-    #status_label.configure(text="Transkribiere... Bitte warten.")
     app.update()
 
-    result = model.transcribe(filepath)
-    text = result["text"]
-
-    text_box.delete("1.0", "end")
-    text_box.insert("1.0", text)
-    
-    formatted_text = format_text_with_linebreaks_commas_points(text)
-
+    original_name = os.path.splitext(os.path.basename(filepath))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     output_path = create_output_folder()
-    text_filename = f"transkript_{original_name}_{timestamp}.txt"
-    full_path = os.path.join(output_path, text_filename)
-    with open(full_path, "w", encoding="utf-8") as f:
-        f.write(formatted_text)
 
-    
+    # Konvertieren, falls nötig
+    if not filepath.endswith(".wav"):
+        filepath = convert_to_wav(filepath)
+
+    # Whisper mit Segmenten
+    result = model.transcribe(filepath, verbose=False, word_timestamps=False)
+    segments = result["segments"]
+
+    # Sprecher zuordnen
+    speaker_segments = diarize_speakers(filepath, segments)
+
+    # Formatieren für Ausgabe
+    formatted_lines = [f"[{speaker}]: {text}" for speaker, text in speaker_segments]
+    final_text = "\n\n".join(formatted_lines)
+
+    # Anzeigen und Speichern
     text_box.delete("1.0", "end")
-    text_box.insert("1.0", formatted_text)
+    text_box.insert("1.0", final_text)
 
-    status_label.configure(text=f"Fertig! Gespeichert als:\n{text_filename}")
+    text_filename = f"transkript_{original_name}_{timestamp}.txt"
+    with open(os.path.join(output_path, text_filename), "w", encoding="utf-8") as f:
+        f.write(final_text)
 
-# GUI Setup
+    status_label.configure(text=f"Fertig! Gespeichert als: {text_filename}")
+
+# ---------------------- GUI SETUP ----------------------
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-
 app = ctk.CTk()
-app.title("Transkriptor")
-
-
-# Grid-Setup für dynamische Größenanpassung
-app.grid_rowconfigure(2, weight=1)   # Textbox soll wachsen (Reihe 2)
+app.title("Transkriptor mit Sprechererkennung")
+app.grid_rowconfigure(2, weight=1)
 app.grid_columnconfigure(0, weight=1)
 
-title = ctk.CTkLabel(app, text="🎙️Audio → Text", font=ctk.CTkFont(size=22, weight="bold"))
+# Titel
+title = ctk.CTkLabel(app, text="🎙️Audio → Text + Sprecher", font=ctk.CTkFont(size=22, weight="bold"))
 title.grid(row=0, column=0, pady=(20,10), sticky="n")
 
-# Frame für die Buttons oben (zweispaltig)
+# Button-Frame
 button_frame = ctk.CTkFrame(app, fg_color="transparent")
-button_frame.grid(row=0, column=0, sticky="ew", pady=(100, 10))
-
+button_frame.grid(row=1, column=0, sticky="ew", pady=(10, 10))
 button_frame.grid_columnconfigure(0, weight=1)
 button_frame.grid_columnconfigure(1, weight=1)
 
-# Linker Button: Modell Dropdown
 model_dropdown = ctk.CTkOptionMenu(button_frame, values=list(model_dict.keys()), command=on_model_select)
-model_dropdown.set("Ausgewogen (gute Genauigkeit/völlig ausreichend)")
-model_dropdown.grid(row=0, column=0, sticky="w", padx=(20,0))  # links bündig mit Textbox
+model_dropdown.set("Ausgewogen (gute Genauigkeit/empfohlen)")
+model_dropdown.grid(row=0, column=0, sticky="w", padx=(20,0))
 
-# Rechter Button: Upload
 upload_btn = ctk.CTkButton(button_frame, text="🎧 Audiodatei auswählen", command=transkribieren)
-upload_btn.grid(row=0, column=1, sticky="e", padx=(0,20))  # rechts bündig mit Textbox
+upload_btn.grid(row=0, column=1, sticky="e", padx=(0,20))
 
-# Textbox (mit gleichen horizontalen Rändern wie Buttons)
+# Textbox
 text_box = ctk.CTkTextbox(app, font=("Arial", 14))
 text_box.insert("1.0", "Wähle die Genauigkeit der Transkription und eine Audiodatei aus")
 text_box.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
 
-# Status Label darunter
+# Status + Datei anzeigen
 status_label = ctk.CTkLabel(app, text="", font=("Arial", 12))
 status_label.grid(row=3, column=0, sticky="ew", padx=20)
 
-# Button "Datei anzeigen" unten
 show_files_btn = ctk.CTkButton(app, text="Datei anzeigen", command=open_output_folder)
 show_files_btn.grid(row=4, column=0, pady=10)
-
-
 
 app.after(1, maximize_window)
 app.mainloop()
