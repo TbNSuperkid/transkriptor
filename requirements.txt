@@ -1,0 +1,4 @@
+customtkinter
+openai-whisper
+pyttsx3
+pydub
